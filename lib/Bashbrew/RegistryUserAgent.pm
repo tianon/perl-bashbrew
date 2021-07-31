@@ -75,22 +75,12 @@ sub ref_url ($self, $ref, $urlType = undef, $direct = 0) {
 }
 
 sub get_manifest_p ($self, $ref, $tries = $self->defaultRetries) {
-	--$tries;
-	my $lastTry = $tries < 1;
-
 	state %cache;
 	if ($ref->digest && $cache{$ref->digest}) {
 		return Mojo::Promise->resolve($cache{$ref->digest});
 	}
 
-	return $self->_retry_simple_req_p($tries, GET => $self->ref_url($ref, 'manifests'), { Accept => $acceptHeader })->then(sub ($tx) {
-		return if $tx->res->code == 404 || $tx->res->code == 401;
-
-		if (!$lastTry && $tx->res->code != 200) {
-			return $self->get_manifest_p($ref, $tries);
-		}
-		die "unexpected response code fetching '$ref': " . $tx->res->code . ' -- ' . $tx->res->message unless $tx->res->code == 200;
-
+	return $self->authenticated_registry_req_p(GET => $ref => $ref->repo_name => 'manifests/' . $ref->obj(undef), { Accept => $acceptHeader }, undef, $tries)->then(sub ($tx) {
 		my $digest = $tx->res->headers->header('Docker-Content-Digest') or die "'$ref' is missing 'Docker-Content-Digest' header";
 		die "malformed 'docker-content-digest' header in '$ref': '$digest'" unless $digest =~ m!^sha256:!; # TODO reuse Bashbrew::RemoteImageRef digest validation
 
@@ -202,11 +192,11 @@ sub get_creds ($self, $ref) {
 	die 'failed to find credentials for "' . $ref->canonical_host . '" in ".docker/config.json" file';
 }
 
-sub authenticated_registry_req_p ($self, $method, $ref, $scope, $url, $contentType = undef, $payload = undef, $tries = $self->defaultRetries) {
+sub authenticated_registry_req_p ($self, $method, $ref, $scope, $url, $headers = undef, $payload = undef, $tries = $self->defaultRetries) {
 	--$tries;
 	my $lastTry = $tries < 1;
 
-	my %headers = ($contentType ? ('Content-Type' => $contentType) : ());
+	my %headers = ($headers ? %$headers : ());
 
 	state %tokens;
 	if (my $token = $tokens{$scope}) {
@@ -216,6 +206,8 @@ sub authenticated_registry_req_p ($self, $method, $ref, $scope, $url, $contentTy
 	my $methodP = lc($method) . '_p';
 	my $fullUrl = $self->ref_url($ref->clone->digest(undef)->tag(undef), undef, 1) . '/' . $url;
 	return $self->ua->$methodP($fullUrl, \%headers, ($payload ? $payload : ()))->then(sub ($tx) {
+		return if $tx->res->code == 404;
+
 		if (!$lastTry && $tx->res->code == 401) {
 			# "Unauthorized" -- we must need to go fetch a token for this registry request (so let's go do that, then retry the original registry request)
 			my $auth = $tx->res->headers->www_authenticate;
@@ -247,12 +239,12 @@ sub authenticated_registry_req_p ($self, $method, $ref, $scope, $url, $contentTy
 				}
 
 				$tokens{$scope} = $tx->res->json->{token};
-				return $self->authenticated_registry_req_p($method, $ref, $scope, $url, $contentType, $payload, $tries);
+				return $self->authenticated_registry_req_p($method, $ref, $scope, $url, $headers, $payload, $tries);
 			});
 		}
 
 		if (!$lastTry && $tx->res->code != 200) {
-			return $self->authenticated_registry_req_p($method, $ref, $scope, $url, $contentType, $payload, $tries);
+			return $self->authenticated_registry_req_p($method, $ref, $scope, $url, $headers, $payload, $tries);
 		}
 
 		if (my $error = $tx->error) {

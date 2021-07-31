@@ -113,7 +113,7 @@ Mojo::Promise->map({ concurrency => 8 }, sub ($img) {
 		: (
 			map { $ref->clone->tag((split /:/)[1]) }
 			List::Util::uniq sort
-			split /\n/, bashbrew('list', $ref->repo_name)
+			split /\n/, bashbrew('list', 'debian')
 		)
 	);
 	return Mojo::Promise->resolve unless @refs; # no tags, nothing to do! (opensuse, etc)
@@ -121,13 +121,13 @@ Mojo::Promise->map({ concurrency => 8 }, sub ($img) {
 	return Mojo::Promise->map({ concurrency => 1 }, sub ($ref) {
 		my @arches = (
 			List::Util::uniq sort
-			split /\n/, bashbrew('cat', '--format', '{{ range .Entries }}{{ range .Architectures }}{{ . }}={{ archNamespace . }}{{ "\n" }}{{ end }}{{ end }}', $ref->repo_name . ':' . $ref->tag)
+			split /\n/, bashbrew('cat', '--format', '{{ range .Entries }}{{ range .Architectures }}{{ . }}={{ archNamespace . }}{{ "\n" }}{{ end }}{{ end }}', 'debian:' . $ref->tag)
 		);
 		return Mojo::Promise->resolve unless @arches; # no arches, nothing to do!
 
 		return Mojo::Promise->map({ concurrency => 1 }, sub ($archData) {
 			my ($arch, $archNamespace) = split /=/, $archData;
-			my $archRef = Bashbrew::RemoteImageRef->new($archNamespace . '/' . $ref->repo_name . ':' . $ref->tag);
+			my $archRef = Bashbrew::RemoteImageRef->new($archNamespace . ':' . $ref->tag);
 			die "'$archRef' registry does not match '$ref' registry" unless $archRef->registry_host eq $ref->registry_host;
 			return get_arch_p($ref, $arch, $archRef);
 		}, @arches)->then(sub (@archResponses) {
@@ -181,7 +181,7 @@ Mojo::Promise->map({ concurrency => 8 }, sub ($img) {
 									PUT => $ref,
 									'repository:' . $ref->repo . ':push',
 									'manifests/' . $artifactRef->digest,
-									$manifestData->{mediaType}, $manifestData->{verbatim},
+									{ 'Content-Type' => $manifestData->{mediaType} }, $manifestData->{verbatim},
 								)->then(sub ($tx) {
 									if (my $err = $tx->error) {
 										die "Failed to PUT $artifactRef to $ref: " . $err->{message};
@@ -226,7 +226,7 @@ Mojo::Promise->map({ concurrency => 8 }, sub ($img) {
 						PUT => $ref,
 						$ref->repo . ':push',
 						'manifests/' . $ref->tag,
-						$manifestList->{mediaType}, $manifestListJson
+						{ 'Content-Type' => $manifestList->{mediaType} }, $manifestListJson
 					)->then(sub ($tx) {
 						if (my $err = $tx->error) {
 							die 'Failed to push manifest list: ' . $err->{message};
